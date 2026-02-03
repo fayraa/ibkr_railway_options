@@ -1,16 +1,40 @@
 # Options Bot with IB Gateway for Railway
-# Uses well-maintained ib-gateway-docker base image
+# Uses Docker Hub image (more reliable than ghcr.io)
 
-FROM ghcr.io/gnzsnz/ib-gateway-docker:10.30.1t
+FROM ubuntu:22.04
 
-USER root
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Python and netcat
+# Install dependencies
 RUN apt-get update && apt-get install -y \
+    wget \
+    unzip \
+    xvfb \
+    libxtst6 \
+    libxrender1 \
+    libxi6 \
+    libxft2 \
+    x11vnc \
+    socat \
+    netcat-openbsd \
     python3 \
     python3-pip \
-    netcat-openbsd \
+    openjdk-11-jre \
     && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt
+
+# Download and install IB Gateway
+RUN wget -q https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-stable-standalone-linux-x64.sh -O ibgateway-install.sh \
+    && chmod +x ibgateway-install.sh \
+    && yes "" | ./ibgateway-install.sh \
+    && rm ibgateway-install.sh
+
+# Download and install IBC
+RUN wget -q https://github.com/IbcAlpha/IBC/releases/download/3.19.0/IBCLinux-3.19.0.zip -O ibc.zip \
+    && unzip ibc.zip -d /opt/ibc \
+    && chmod +x /opt/ibc/*.sh \
+    && rm ibc.zip
 
 # Copy bot code
 WORKDIR /app
@@ -19,55 +43,83 @@ RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
 COPY . .
 
-# Create combined startup script
-RUN cat > /app/entrypoint.sh << 'EOF'
+# Create IBC config
+RUN mkdir -p /root/ibc && cat > /root/ibc/config.ini << 'EOF'
+[IBGateway]
+TradingMode=paper
+IbAutoClosedown=no
+AcceptIncomingConnectionAction=accept
+AcceptNonBrokerageAccountWarning=yes
+AllowBlindTrading=yes
+DismissPasswordExpiryWarning=yes
+DismissNSEComplianceNotice=yes
+DismissBuildExpired=yes
+OverrideTwsApiPort=4001
+ReadOnlyLogin=no
+StoreSettingsOnServer=no
+EOF
+
+# Create startup script
+RUN cat > /app/start.sh << 'STARTSCRIPT'
 #!/bin/bash
-set -e
-
 echo "============================================"
-echo "  OPTIONS BOT + IB GATEWAY STARTUP"
+echo "  OPTIONS BOT + IB GATEWAY"
 echo "============================================"
 
-# Start the base image's entrypoint in background
+# Start virtual display
+Xvfb :99 -screen 0 1024x768x24 &
+export DISPLAY=:99
+sleep 2
+
+# Set IBC environment
+export TWS_MAJOR_VRSN=10.30
+export IBC_INI=/root/ibc/config.ini
+export IBC_PATH=/opt/ibc
+export TWS_PATH=/root/Jts
+export TWS_CONFIG_PATH=/root/Jts
+
+# Update config with trading mode
+if [ "$TRADING_MODE" = "live" ]; then
+    sed -i 's/TradingMode=paper/TradingMode=live/' /root/ibc/config.ini
+fi
+
 echo "Starting IB Gateway..."
-/opt/scripts/entrypoint.sh &
+echo "Username: $TWS_USERID"
+echo "Mode: ${TRADING_MODE:-paper}"
 
-# Wait for IB Gateway to be ready
-echo "Waiting for IB Gateway API on port 4001..."
-MAX_WAIT=120
-COUNTER=0
-while ! nc -z 127.0.0.1 4001 2>/dev/null; do
-    COUNTER=$((COUNTER + 1))
-    if [ $COUNTER -ge $MAX_WAIT ]; then
-        echo "ERROR: IB Gateway did not start within ${MAX_WAIT} seconds"
-        exit 1
+# Start IBC with credentials
+/opt/ibc/gatewaystart.sh "$TWS_USERID" "$TWS_PASSWORD" "${TRADING_MODE:-paper}" &
+
+# Wait for Gateway
+echo "Waiting for IB Gateway on port 4001..."
+for i in $(seq 1 120); do
+    if nc -z 127.0.0.1 4001 2>/dev/null; then
+        echo "IB Gateway ready!"
+        break
     fi
-    echo "Waiting... ($COUNTER/${MAX_WAIT}s)"
-    sleep 1
+    echo "Waiting... ($i/120)"
+    sleep 2
 done
 
-echo ""
-echo "============================================"
-echo "  IB Gateway ready! Starting Options Bot"
-echo "============================================"
-echo ""
+if ! nc -z 127.0.0.1 4001 2>/dev/null; then
+    echo "ERROR: IB Gateway failed to start"
+    exit 1
+fi
 
-# Give it a few more seconds to fully initialize
 sleep 10
+echo ""
+echo "============================================"
+echo "  Starting Options Bot"
+echo "============================================"
+cd /app && python3 main_v2.py run
+STARTSCRIPT
+RUN chmod +x /app/start.sh
 
-# Start the options bot
-cd /app
-exec python3 main_v2.py run
-EOF
-RUN chmod +x /app/entrypoint.sh
-
-# Environment variables
-# The base image uses TWS_USERID and TWS_PASSWORD
-# We also set IBKR_* for our bot config
 ENV IBKR_HOST=127.0.0.1
 ENV IBKR_PORT=4001
 ENV PYTHONUNBUFFERED=1
+ENV DISPLAY=:99
 
-EXPOSE 4001 4002 5900
+EXPOSE 4001 4002
 
-ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["/app/start.sh"]
