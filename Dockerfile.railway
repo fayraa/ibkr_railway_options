@@ -44,10 +44,41 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Create IBC config
-RUN mkdir -p /root/ibc && cat > /root/ibc/config.ini << 'EOF'
-[IBGateway]
-TradingMode=paper
+# Create IBC directory
+RUN mkdir -p /root/ibc
+
+# Create startup script
+RUN cat > /app/start.sh << 'STARTSCRIPT'
+#!/bin/bash
+echo "============================================"
+echo "  OPTIONS BOT + IB GATEWAY"
+echo "============================================"
+
+# Start virtual display
+echo "Starting Xvfb..."
+Xvfb :99 -screen 0 1024x768x24 &
+export DISPLAY=:99
+sleep 3
+
+# Verify display is working
+if ! xdpyinfo -display :99 >/dev/null 2>&1; then
+    echo "ERROR: Xvfb failed to start"
+fi
+
+# Set IBC environment
+export TWS_MAJOR_VRSN=1037
+export IBC_INI=/root/ibc/config.ini
+export IBC_PATH=/opt/ibc
+export TWS_PATH=/root/Jts
+export TWS_CONFIG_PATH=/root/Jts
+export JAVA_PATH=/root/Jts/ibgateway/1037/jre/bin
+
+# Write credentials to config.ini
+echo "Configuring IBC..."
+cat > /root/ibc/config.ini << EOF
+IbLoginId=$TWS_USERID
+IbPassword=$TWS_PASSWORD
+TradingMode=${TRADING_MODE:-paper}
 IbAutoClosedown=no
 AcceptIncomingConnectionAction=accept
 AcceptNonBrokerageAccountWarning=yes
@@ -58,56 +89,52 @@ DismissBuildExpired=yes
 OverrideTwsApiPort=4001
 ReadOnlyLogin=no
 StoreSettingsOnServer=no
+ExistingSessionDetectedAction=primary
 EOF
-
-# Create startup script
-RUN cat > /app/start.sh << 'STARTSCRIPT'
-#!/bin/bash
-echo "============================================"
-echo "  OPTIONS BOT + IB GATEWAY"
-echo "============================================"
-
-# Start virtual display
-Xvfb :99 -screen 0 1024x768x24 &
-export DISPLAY=:99
-sleep 2
-
-# Set IBC environment
-export TWS_MAJOR_VRSN=10.30
-export IBC_INI=/root/ibc/config.ini
-export IBC_PATH=/opt/ibc
-export TWS_PATH=/root/Jts
-export TWS_CONFIG_PATH=/root/Jts
-
-# Update config with trading mode
-if [ "$TRADING_MODE" = "live" ]; then
-    sed -i 's/TradingMode=paper/TradingMode=live/' /root/ibc/config.ini
-fi
 
 echo "Starting IB Gateway..."
 echo "Username: $TWS_USERID"
 echo "Mode: ${TRADING_MODE:-paper}"
+echo "TWS_MAJOR_VRSN: $TWS_MAJOR_VRSN"
 
-# Start IBC with credentials
-/opt/ibc/gatewaystart.sh "$TWS_USERID" "$TWS_PASSWORD" "${TRADING_MODE:-paper}" &
+# Start IBC - capture output
+cd /opt/ibc
+./gatewaystart.sh -inline 2>&1 &
+IBC_PID=$!
+
+echo "IBC started with PID: $IBC_PID"
 
 # Wait for Gateway
 echo "Waiting for IB Gateway on port 4001..."
 for i in $(seq 1 120); do
     if nc -z 127.0.0.1 4001 2>/dev/null; then
-        echo "IB Gateway ready!"
+        echo "IB Gateway ready on port 4001!"
         break
     fi
+    
+    # Check if IBC process is still running
+    if ! kill -0 $IBC_PID 2>/dev/null; then
+        echo "ERROR: IBC process died"
+        echo "Checking for logs..."
+        cat /root/ibc/*.log 2>/dev/null || echo "No IBC logs found"
+        cat /root/Jts/*.log 2>/dev/null || echo "No TWS logs found"
+        find /root -name "*.log" -exec echo "=== {} ===" \; -exec tail -50 {} \; 2>/dev/null
+    fi
+    
     echo "Waiting... ($i/120)"
     sleep 2
 done
 
 if ! nc -z 127.0.0.1 4001 2>/dev/null; then
-    echo "ERROR: IB Gateway failed to start"
+    echo "ERROR: IB Gateway failed to start after 240 seconds"
+    echo "=== Checking processes ==="
+    ps aux
+    echo "=== Checking logs ==="
+    find /root -name "*.log" -exec echo "=== {} ===" \; -exec tail -100 {} \; 2>/dev/null
     exit 1
 fi
 
-sleep 10
+sleep 5
 echo ""
 echo "============================================"
 echo "  Starting Options Bot"
