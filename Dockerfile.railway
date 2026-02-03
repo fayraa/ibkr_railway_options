@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     unzip \
     xvfb \
+    x11-utils \
     libxtst6 \
     libxrender1 \
     libxi6 \
@@ -60,24 +61,12 @@ Xvfb :99 -screen 0 1024x768x24 &
 export DISPLAY=:99
 sleep 3
 
-# Verify display is working
-if ! xdpyinfo -display :99 >/dev/null 2>&1; then
-    echo "ERROR: Xvfb failed to start"
-fi
-
-# Set IBC environment
-export TWS_MAJOR_VRSN=1037
-export IBC_INI=/root/ibc/config.ini
-export IBC_PATH=/opt/ibc
-export TWS_PATH=/root/Jts
-export TWS_CONFIG_PATH=/root/Jts
-export JAVA_PATH=/root/Jts/ibgateway/1037/jre/bin
-
-# Write credentials to config.ini
-echo "Configuring IBC..."
+# Create IBC config with credentials
+echo "Creating IBC config..."
+mkdir -p /root/ibc
 cat > /root/ibc/config.ini << EOF
-IbLoginId=$TWS_USERID
-IbPassword=$TWS_PASSWORD
+IbLoginId=${TWS_USERID}
+IbPassword=${TWS_PASSWORD}
 TradingMode=${TRADING_MODE:-paper}
 IbAutoClosedown=no
 AcceptIncomingConnectionAction=accept
@@ -92,33 +81,83 @@ StoreSettingsOnServer=no
 ExistingSessionDetectedAction=primary
 EOF
 
-echo "Starting IB Gateway..."
-echo "Username: $TWS_USERID"
-echo "Mode: ${TRADING_MODE:-paper}"
-echo "TWS_MAJOR_VRSN: $TWS_MAJOR_VRSN"
+echo "Config created with user: ${TWS_USERID}"
+echo "Trading mode: ${TRADING_MODE:-paper}"
 
-# Start IBC - capture output
-cd /opt/ibc
-./gatewaystart.sh -inline 2>&1 &
-IBC_PID=$!
+# Find Java from IB Gateway's bundled JRE
+JAVA_PATH=$(find /opt/i4j_jres -name "java" -type f 2>/dev/null | head -1)
+if [ -z "$JAVA_PATH" ]; then
+    JAVA_PATH="java"
+fi
+echo "Using Java: $JAVA_PATH"
 
-echo "IBC started with PID: $IBC_PID"
+# Gateway paths
+GATEWAY_DIR="/root/Jts/ibgateway/1037"
+IBC_JAR="/opt/ibc/IBC.jar"
+
+# Build classpath with Gateway jars
+CLASSPATH="$IBC_JAR"
+if [ -d "$GATEWAY_DIR/jars" ]; then
+    for jar in $GATEWAY_DIR/jars/*.jar; do
+        CLASSPATH="$CLASSPATH:$jar"
+    done
+fi
+
+echo "Starting IB Gateway via IBC Java class..."
+echo "Gateway dir: $GATEWAY_DIR"
+echo "IBC jar: $IBC_JAR"
+
+# Launch IBC's IbcGateway directly
+cd $GATEWAY_DIR
+$JAVA_PATH \
+    -cp "$CLASSPATH" \
+    -Xmx1024m \
+    -XX:+UseG1GC \
+    -DjtsConfigDir=/root/Jts \
+    ibcalpha.ibc.IbcGateway \
+    /root/ibc/config.ini \
+    2>&1 | tee /root/ibc/gateway.log &
+
+GW_PID=$!
+echo "Gateway process PID: $GW_PID"
 
 # Wait for Gateway
 echo "Waiting for IB Gateway on port 4001..."
 for i in $(seq 1 120); do
     if nc -z 127.0.0.1 4001 2>/dev/null; then
-        echo "IB Gateway ready on port 4001!"
+        echo ""
+        echo "=========================================="
+        echo "  IB Gateway ready on port 4001!"
+        echo "=========================================="
         break
     fi
     
-    # Check if IBC process is still running
-    if ! kill -0 $IBC_PID 2>/dev/null; then
-        echo "ERROR: IBC process died"
-        echo "Checking for logs..."
-        cat /root/ibc/*.log 2>/dev/null || echo "No IBC logs found"
-        cat /root/Jts/*.log 2>/dev/null || echo "No TWS logs found"
-        find /root -name "*.log" -exec echo "=== {} ===" \; -exec tail -50 {} \; 2>/dev/null
+    # Check if process still running
+    if ! kill -0 $GW_PID 2>/dev/null; then
+        echo ""
+        echo "ERROR: Gateway process died"
+        echo ""
+        echo "=== Gateway Log ==="
+        cat /root/ibc/gateway.log 2>/dev/null
+        echo ""
+        echo "=== Trying gatewaystart.sh as fallback ==="
+        
+        # Try the original method as fallback
+        cd /opt/ibc
+        export TWS_MAJOR_VRSN=1037
+        export IBC_INI=/root/ibc/config.ini
+        export TWS_PATH=/root/Jts
+        bash ./gatewaystart.sh "${TWS_USERID}" "${TWS_PASSWORD}" "${TRADING_MODE:-paper}" 2>&1 | tee /root/ibc/fallback.log &
+        sleep 30
+        
+        if nc -z 127.0.0.1 4001 2>/dev/null; then
+            echo "Fallback method worked!"
+            break
+        else
+            echo "Fallback also failed"
+            cat /root/ibc/fallback.log 2>/dev/null
+            exit 1
+        fi
     fi
     
     echo "Waiting... ($i/120)"
@@ -126,11 +165,14 @@ for i in $(seq 1 120); do
 done
 
 if ! nc -z 127.0.0.1 4001 2>/dev/null; then
+    echo ""
     echo "ERROR: IB Gateway failed to start after 240 seconds"
-    echo "=== Checking processes ==="
+    echo ""
+    echo "=== Gateway Log ==="
+    cat /root/ibc/gateway.log 2>/dev/null
+    echo ""
+    echo "=== Processes ==="
     ps aux
-    echo "=== Checking logs ==="
-    find /root -name "*.log" -exec echo "=== {} ===" \; -exec tail -100 {} \; 2>/dev/null
     exit 1
 fi
 
