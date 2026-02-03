@@ -1,0 +1,23 @@
+[build]
+# Use the combined Dockerfile with IB Gateway + Bot
+dockerfilePath = "Dockerfile.railway"
+
+[deploy]
+# Supervisor manages both processes
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5
+
+# IB Gateway needs time to start
+healthcheckTimeout = 300
+
+[env]
+PYTHONUNBUFFERED = "1"
+IBKR_HOST = "127.0.0.1"
+IBKR_PORT = "4001"
+
+# Set these as Railway secrets (not here):
+# IBKR_USERNAME = "your_username"
+# IBKR_PASSWORD = "your_password"  
+# IBKR_TRADING_MODE = "paper"
+# TELEGRAM_BOT_TOKEN = "your_token"
+# TELEGRAM_CHAT_ID = "your_chat_id"

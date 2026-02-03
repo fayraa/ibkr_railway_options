@@ -1,0 +1,73 @@
+# Options Bot with IB Gateway for Railway
+# Uses well-maintained ib-gateway-docker base image
+
+FROM ghcr.io/gnzsnz/ib-gateway-docker:10.30.1t
+
+USER root
+
+# Install Python and netcat
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy bot code
+WORKDIR /app
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
+
+COPY . .
+
+# Create combined startup script
+RUN cat > /app/entrypoint.sh << 'EOF'
+#!/bin/bash
+set -e
+
+echo "============================================"
+echo "  OPTIONS BOT + IB GATEWAY STARTUP"
+echo "============================================"
+
+# Start the base image's entrypoint in background
+echo "Starting IB Gateway..."
+/opt/scripts/entrypoint.sh &
+
+# Wait for IB Gateway to be ready
+echo "Waiting for IB Gateway API on port 4001..."
+MAX_WAIT=120
+COUNTER=0
+while ! nc -z 127.0.0.1 4001 2>/dev/null; do
+    COUNTER=$((COUNTER + 1))
+    if [ $COUNTER -ge $MAX_WAIT ]; then
+        echo "ERROR: IB Gateway did not start within ${MAX_WAIT} seconds"
+        exit 1
+    fi
+    echo "Waiting... ($COUNTER/${MAX_WAIT}s)"
+    sleep 1
+done
+
+echo ""
+echo "============================================"
+echo "  IB Gateway ready! Starting Options Bot"
+echo "============================================"
+echo ""
+
+# Give it a few more seconds to fully initialize
+sleep 10
+
+# Start the options bot
+cd /app
+exec python3 main_v2.py run
+EOF
+RUN chmod +x /app/entrypoint.sh
+
+# Environment variables
+# The base image uses TWS_USERID and TWS_PASSWORD
+# We also set IBKR_* for our bot config
+ENV IBKR_HOST=127.0.0.1
+ENV IBKR_PORT=4001
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 4001 4002 5900
+
+ENTRYPOINT ["/app/entrypoint.sh"]
