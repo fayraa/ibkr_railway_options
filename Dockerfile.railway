@@ -34,6 +34,7 @@ RUN wget -q https://download2.interactivebrokers.com/installers/ibgateway/stable
 RUN wget -q https://github.com/IbcAlpha/IBC/releases/download/3.19.0/IBCLinux-3.19.0.zip -O ibc.zip \
     && unzip ibc.zip -d /opt/ibc \
     && chmod +x /opt/ibc/*.sh \
+    && chmod +x /opt/ibc/scripts/*.sh \
     && rm ibc.zip
 
 # Copy bot code
