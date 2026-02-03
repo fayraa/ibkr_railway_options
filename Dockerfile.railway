@@ -39,7 +39,7 @@ RUN wget -q https://github.com/IbcAlpha/IBC/releases/download/3.19.0/IBCLinux-3.
 # Copy bot code
 WORKDIR /app
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt
 
 COPY . .
 
