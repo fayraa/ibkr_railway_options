@@ -47,6 +47,13 @@ class EnhancedIBKRClient:
             )
             self._connected = True
             logger.info(f"Connected to IBKR at {self.config.host}:{self.config.port}")
+            
+            # Request delayed market data (type 3) if real-time not available
+            # This is free and works for paper trading without subscriptions
+            # 1=Live, 2=Frozen, 3=Delayed, 4=Delayed-Frozen
+            self.ib.reqMarketDataType(3)
+            logger.info("Requested delayed market data (type 3)")
+            
             return True
         except Exception as e:
             logger.error(f"Failed to connect to IBKR: {e}")
@@ -77,14 +84,27 @@ class EnhancedIBKRClient:
             self.ib.qualifyContracts(contract)
             
             ticker = self.ib.reqMktData(contract, '', False, False)
-            self.ib.sleep(2)
+            self.ib.sleep(3)  # Wait a bit longer for delayed data
             
-            price = ticker.marketPrice()
+            price = self._get_price_from_ticker(ticker)
             self.ib.cancelMktData(contract)
             
-            if price and price > 0:
+            if price:
                 return price
-            return ticker.last if ticker.last > 0 else ticker.close
+            
+            # If still no price, try to get from historical data
+            logger.warning(f"No live/delayed price for {symbol}, trying historical data")
+            bars = self.ib.reqHistoricalData(
+                contract,
+                endDateTime='',
+                durationStr='1 D',
+                barSizeSetting='1 day',
+                whatToShow='TRADES',
+                useRTH=True
+            )
+            if bars:
+                return bars[-1].close
+            return None
             
         except Exception as e:
             logger.error(f"Error fetching price for {symbol}: {e}")
@@ -131,6 +151,39 @@ class EnhancedIBKRClient:
     
     # ============ VIX Term Structure ============
     
+    def _get_price_from_ticker(self, ticker) -> Optional[float]:
+        """Extract price from ticker, handling both live and delayed data"""
+        import math
+        
+        # Try live data first
+        price = ticker.marketPrice()
+        if price and not math.isnan(price) and price > 0:
+            return price
+        
+        # Try last price
+        if ticker.last and not math.isnan(ticker.last) and ticker.last > 0:
+            return ticker.last
+        
+        # Try delayed data fields
+        if hasattr(ticker, 'delayedLast') and ticker.delayedLast and not math.isnan(ticker.delayedLast) and ticker.delayedLast > 0:
+            return ticker.delayedLast
+        
+        # Try close price
+        if ticker.close and not math.isnan(ticker.close) and ticker.close > 0:
+            return ticker.close
+            
+        # Try delayed close
+        if hasattr(ticker, 'delayedClose') and ticker.delayedClose and not math.isnan(ticker.delayedClose) and ticker.delayedClose > 0:
+            return ticker.delayedClose
+        
+        # Try bid/ask midpoint
+        bid = ticker.bid if hasattr(ticker, 'bid') and ticker.bid and not math.isnan(ticker.bid) else 0
+        ask = ticker.ask if hasattr(ticker, 'ask') and ticker.ask and not math.isnan(ticker.ask) else 0
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2
+            
+        return None
+    
     def get_vix(self) -> Optional[float]:
         """Get current VIX level"""
         try:
@@ -138,18 +191,21 @@ class EnhancedIBKRClient:
             self.ib.qualifyContracts(vix)
             
             ticker = self.ib.reqMktData(vix, '', False, False)
-            self.ib.sleep(2)
+            self.ib.sleep(3)  # Wait a bit longer for delayed data
             
-            price = ticker.marketPrice()
+            price = self._get_price_from_ticker(ticker)
             self.ib.cancelMktData(vix)
             
-            if price and price > 0:
+            if price:
                 return price
-            return ticker.last if ticker.last > 0 else ticker.close
+            
+            # Fallback to a reasonable default for paper trading
+            logger.warning("VIX data unavailable, using default value 18.0")
+            return 18.0
             
         except Exception as e:
             logger.error(f"Error fetching VIX: {e}")
-            return None
+            return 18.0  # Default VIX for paper trading
     
     def get_vix3m(self) -> Optional[float]:
         """Get VIX3M (3-month VIX)"""
@@ -159,14 +215,14 @@ class EnhancedIBKRClient:
             self.ib.qualifyContracts(vix3m)
             
             ticker = self.ib.reqMktData(vix3m, '', False, False)
-            self.ib.sleep(2)
+            self.ib.sleep(3)  # Wait a bit longer for delayed data
             
-            price = ticker.marketPrice()
+            price = self._get_price_from_ticker(ticker)
             self.ib.cancelMktData(vix3m)
             
-            if price and price > 0:
+            if price:
                 return price
-            return ticker.last if ticker.last > 0 else None
+            return None
             
         except Exception as e:
             logger.error(f"Error fetching VIX3M: {e}")
@@ -195,9 +251,10 @@ class EnhancedIBKRClient:
             vix9d = Index('VIX9D', 'CBOE')
             self.ib.qualifyContracts(vix9d)
             ticker = self.ib.reqMktData(vix9d, '', False, False)
-            self.ib.sleep(1)
-            if ticker.marketPrice() and ticker.marketPrice() > 0:
-                structure['VIX9D'] = ticker.marketPrice()
+            self.ib.sleep(2)
+            price = self._get_price_from_ticker(ticker)
+            if price:
+                structure['VIX9D'] = price
             self.ib.cancelMktData(vix9d)
         except:
             pass
