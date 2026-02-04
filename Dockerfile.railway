@@ -180,7 +180,7 @@ if ! nc -z 127.0.0.1 4001 2>/dev/null; then
     exit 1
 fi
 
-sleep 5
+sleep 15
 echo ""
 echo "============================================"
 echo "  Starting Options Bot"
