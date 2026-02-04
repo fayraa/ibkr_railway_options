@@ -279,6 +279,29 @@ US Market Hours: 9:30 PM - 4:00 AM SGT
 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} SGT
 """
         return self.send_message(message)
+    
+    def send_sleep(self, next_open: str = None) -> bool:
+        """Send notification when bot goes to sleep outside market hours"""
+        next_info = f"\nNext market open: {next_open}" if next_open else ""
+        message = f"""
+😴 <b>BOT SLEEPING</b>
+
+Outside US market hours.{next_info}
+
+Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} SGT
+"""
+        return self.send_message(message)
+    
+    def send_wake(self) -> bool:
+        """Send notification when bot wakes up at market open"""
+        message = f"""
+☀️ <b>BOT AWAKE</b>
+
+US markets are open! Starting analysis...
+
+Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} SGT
+"""
+        return self.send_message(message)
 
 
 class ConsoleNotifier:
@@ -316,6 +339,12 @@ class ConsoleNotifier:
     
     def send_shutdown(self) -> bool:
         return self.send_message("BOT STOPPED")
+    
+    def send_sleep(self, next_open: str = None) -> bool:
+        return self.send_message(f"BOT SLEEPING - Outside market hours. Next open: {next_open}")
+    
+    def send_wake(self) -> bool:
+        return self.send_message("BOT AWAKE - Markets open!")
 
 
 def create_notifier(config: TelegramConfig) -> TelegramNotifier | ConsoleNotifier:

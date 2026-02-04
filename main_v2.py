@@ -7,7 +7,7 @@ import time
 import signal
 import sys
 import os
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timedelta
 from typing import Optional
 
 # Use environment config if running in Docker/Railway
@@ -75,6 +75,7 @@ class OptionsBot:
         self.last_analysis: dict[str, OptionsAnalysis] = {}
         self.last_scan_time: Optional[datetime] = None
         self.last_position_check: Optional[datetime] = None
+        self._is_sleeping: bool = False  # Track sleep state for notifications
         
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -125,9 +126,20 @@ class OptionsBot:
                 
                 # Check if market hours
                 if not self._is_market_hours(now):
-                    logger.debug("Outside market hours, sleeping...")
+                    # Send sleep notification only once when entering sleep
+                    if not self._is_sleeping:
+                        self._is_sleeping = True
+                        next_open = self._get_next_market_open()
+                        logger.info(f"Outside market hours, sleeping until {next_open}...")
+                        self.notifier.send_sleep(next_open)
                     time.sleep(60)
                     continue
+                
+                # Send wake notification when entering market hours
+                if self._is_sleeping:
+                    self._is_sleeping = False
+                    logger.info("Market hours started, waking up!")
+                    self.notifier.send_wake()
                 
                 # Check positions for exits
                 if self._should_check_positions(now):
@@ -195,6 +207,40 @@ class OptionsBot:
             
             return market_open <= current_time <= market_close
     
+    def _get_next_market_open(self) -> str:
+        """Calculate next market open time in SGT"""
+        try:
+            import pytz
+            
+            eastern = pytz.timezone('US/Eastern')
+            sgt = pytz.timezone('Asia/Singapore')
+            
+            now_eastern = datetime.now(eastern)
+            
+            # Start from today
+            next_open = now_eastern.replace(
+                hour=self.config.trading.market_open_hour,
+                minute=self.config.trading.market_open_minute,
+                second=0,
+                microsecond=0
+            )
+            
+            # If we're past today's open, move to tomorrow
+            if now_eastern >= next_open:
+                next_open += timedelta(days=1)
+            
+            # Skip weekends
+            while next_open.weekday() >= 5:  # Saturday = 5, Sunday = 6
+                next_open += timedelta(days=1)
+            
+            # Convert to SGT for display
+            next_open_sgt = next_open.astimezone(sgt)
+            return next_open_sgt.strftime('%Y-%m-%d %H:%M SGT')
+            
+        except Exception as e:
+            logger.debug(f"Could not calculate next market open: {e}")
+            return "Next trading day"
+
     def _should_scan(self, now: datetime) -> bool:
         """Check if we should scan for new trades"""
         if self.last_scan_time is None:
