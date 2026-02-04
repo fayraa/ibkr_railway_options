@@ -73,10 +73,35 @@ OverrideTwsApiPort=4001
 ReadOnlyLogin=no
 StoreSettingsOnServer=no
 ExistingSessionDetectedAction=primary
+SendTWSLogsToConsole=yes
+LogComponents=never
+AcceptBidAskLastSizeDisplayUpdateNotice=yes
+AcceptSSLCertificateWarning=yes
+SuppressInfoMessages=yes
 EOF
 
 echo "Config created with user: ${TWS_USERID}"
 echo "Trading mode: ${TRADING_MODE:-paper}"
+
+# Pre-create jts.ini with SSL enabled to avoid dialog
+mkdir -p /root/Jts
+cat > /root/Jts/jts.ini << EOF
+[Logon]
+Locale=en
+UseSSL=true
+s3store=true
+displayedproxymsg=1
+
+[IBGateway]
+ApiOnly=true
+LocalServerPort=4001
+TrustedIPs=127.0.0.1
+
+[Communication]
+Region=us
+EOF
+
+echo "Created jts.ini with SSL pre-configured"
 
 # Find Java from IB Gateway's bundled JRE
 JAVA_PATH=$(find /opt/i4j_jres -name "java" -type f 2>/dev/null | head -1)
@@ -103,11 +128,16 @@ echo "Gateway dir: $GATEWAY_DIR"
 # Use xvfb-run to properly handle virtual display
 # -a = auto-select display number
 # -s = server args
+# Add Java module flags to fix reflection issues
 xvfb-run -a -s "-screen 0 1024x768x24" \
     $JAVA_PATH \
     -cp "$CLASSPATH" \
     -Xmx1024m \
     -XX:+UseG1GC \
+    --add-opens java.desktop/javax.swing=ALL-UNNAMED \
+    --add-opens java.desktop/java.awt=ALL-UNNAMED \
+    --add-opens java.base/java.lang=ALL-UNNAMED \
+    --add-opens java.base/java.util=ALL-UNNAMED \
     -DjtsConfigDir=/root/Jts \
     ibcalpha.ibc.IbcGateway \
     /root/ibc/config.ini \
