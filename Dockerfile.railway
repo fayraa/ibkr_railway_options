@@ -55,12 +55,6 @@ echo "============================================"
 echo "  OPTIONS BOT + IB GATEWAY"
 echo "============================================"
 
-# Start virtual display
-echo "Starting Xvfb..."
-Xvfb :99 -screen 0 1024x768x24 &
-export DISPLAY=:99
-sleep 3
-
 # Create IBC config with credentials
 echo "Creating IBC config..."
 mkdir -p /root/ibc
@@ -103,13 +97,14 @@ if [ -d "$GATEWAY_DIR/jars" ]; then
     done
 fi
 
-echo "Starting IB Gateway via IBC Java class..."
+echo "Starting IB Gateway with xvfb-run..."
 echo "Gateway dir: $GATEWAY_DIR"
-echo "IBC jar: $IBC_JAR"
 
-# Launch IBC's IbcGateway directly
-cd $GATEWAY_DIR
-$JAVA_PATH \
+# Use xvfb-run to properly handle virtual display
+# -a = auto-select display number
+# -s = server args
+xvfb-run -a -s "-screen 0 1024x768x24" \
+    $JAVA_PATH \
     -cp "$CLASSPATH" \
     -Xmx1024m \
     -XX:+UseG1GC \
@@ -132,32 +127,11 @@ for i in $(seq 1 120); do
         break
     fi
     
-    # Check if process still running
-    if ! kill -0 $GW_PID 2>/dev/null; then
-        echo ""
-        echo "ERROR: Gateway process died"
-        echo ""
-        echo "=== Gateway Log ==="
-        cat /root/ibc/gateway.log 2>/dev/null
-        echo ""
-        echo "=== Trying gatewaystart.sh as fallback ==="
-        
-        # Try the original method as fallback
-        cd /opt/ibc
-        export TWS_MAJOR_VRSN=1037
-        export IBC_INI=/root/ibc/config.ini
-        export TWS_PATH=/root/Jts
-        bash ./gatewaystart.sh "${TWS_USERID}" "${TWS_PASSWORD}" "${TRADING_MODE:-paper}" 2>&1 | tee /root/ibc/fallback.log &
-        sleep 30
-        
-        if nc -z 127.0.0.1 4001 2>/dev/null; then
-            echo "Fallback method worked!"
-            break
-        else
-            echo "Fallback also failed"
-            cat /root/ibc/fallback.log 2>/dev/null
-            exit 1
-        fi
+    # Show log periodically
+    if [ $((i % 10)) -eq 0 ]; then
+        echo "=== Recent Gateway Log ==="
+        tail -20 /root/ibc/gateway.log 2>/dev/null
+        echo "========================="
     fi
     
     echo "Waiting... ($i/120)"
@@ -168,7 +142,7 @@ if ! nc -z 127.0.0.1 4001 2>/dev/null; then
     echo ""
     echo "ERROR: IB Gateway failed to start after 240 seconds"
     echo ""
-    echo "=== Gateway Log ==="
+    echo "=== Full Gateway Log ==="
     cat /root/ibc/gateway.log 2>/dev/null
     echo ""
     echo "=== Processes ==="
@@ -188,7 +162,6 @@ RUN chmod +x /app/start.sh
 ENV IBKR_HOST=127.0.0.1
 ENV IBKR_PORT=4001
 ENV PYTHONUNBUFFERED=1
-ENV DISPLAY=:99
 
 EXPOSE 4001 4002
 
